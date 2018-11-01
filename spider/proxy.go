@@ -15,7 +15,7 @@ const (
 	_PROXY_CACHE_KEY   = "data:5u:proxy"
 )
 
-func GetProxy(service *redis.Pool, apiKey string) (proxyURL *url.URL, err error) {
+func GetProxy(service *redis.Pool) (proxyURL *url.URL, err error) {
 	var proxy string
 	if service != nil {
 		redisConn := service.Get()
