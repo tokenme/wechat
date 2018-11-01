@@ -1,0 +1,8 @@
+required = ["github.com/davecgh/go-spew/spew"]
+
+[metadata]
+codename = "wechat-spider"
+
+[prune]
+  go-tests = true
+  unused-packages = true

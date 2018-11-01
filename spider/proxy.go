@@ -15,23 +15,27 @@ const (
 	_PROXY_CACHE_KEY   = "data:5u:proxy"
 )
 
-func GetProxy(service *redis.Pool) (proxy string, err error) {
-	var redisConn *redis.Conn
+func GetProxy(service *redis.Pool, apiKey string) (proxyURL *url.URL, err error) {
+	var proxy string
 	if service != nil {
-		redisConn = service.Get()
+		redisConn := service.Get()
 		defer redisConn.Close()
 		proxy, err = redis.String(redisConn.Do("GET", _PROXY_CACHE_KEY))
 		if err != nil {
-			proxy, err = this.UpdateProxy()
-			if proxy != "" && err == nil {
-				redisConn.Do("SETEX", _PROXY_CACHE_KEY, 50, proxy)
+			proxy, err = UpdateProxy()
+			if proxy == "" || err != nil {
+				return nil, err
 			}
+			redisConn.Do("SETEX", _PROXY_CACHE_KEY, 50, proxy)
 		}
 	} else {
-		proxy, err = this.UpdateProxy()
+		proxy, err = UpdateProxy()
+		if err != nil || proxy == "" {
+			return nil, err
+		}
 	}
 	proxy = strings.TrimSpace(proxy)
-	return
+	return url.Parse("http://" + proxy)
 }
 
 func UpdateProxy() (proxy string, err error) {
@@ -51,7 +55,7 @@ func UpdateProxy() (proxy string, err error) {
 	return "", nil
 }
 
-func newRedisPool(server string, maxIdle int, idleTime time.Duration) *redis.Pool {
+func NewRedisPool(server string, maxIdle int, idleTime time.Duration) *redis.Pool {
 	return &redis.Pool{
 		MaxIdle:     maxIdle,
 		IdleTimeout: idleTime * time.Second,
