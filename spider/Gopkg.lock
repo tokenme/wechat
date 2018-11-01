@@ -63,17 +63,9 @@
 
 [[projects]]
   branch = "master"
-  name = "github.com/robertkrimen/otto"
-  packages = [
-    ".",
-    "ast",
-    "dbg",
-    "file",
-    "parser",
-    "registry",
-    "token"
-  ]
-  revision = "15f95af6e78dcd2030d8195a138bd88d4f403546"
+  name = "github.com/yizenghui/wxarticle2md"
+  packages = ["."]
+  revision = "baa7d4434c64732d371f535effdbe871b10a6988"
 
 [[projects]]
   branch = "master"
@@ -107,18 +99,9 @@
   revision = "f21a4dfb5e38f5895301dc265a8def02365cc3d0"
   version = "v0.3.0"
 
-[[projects]]
-  name = "gopkg.in/sourcemap.v1"
-  packages = [
-    ".",
-    "base64vlq"
-  ]
-  revision = "6e83acea0053641eff084973fee085f0c193c61a"
-  version = "v1.0.5"
-
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "3c76bcc074305407e972bdee3fe315b071101284a8aa23fa2b841fabe4a0b77d"
+  inputs-digest = "e207a352eb08b5ade38ae721e40782970aedae9221ef29d9f2aacd522dd53602"
   solver-name = "gps-cdcl"
   solver-version = 1

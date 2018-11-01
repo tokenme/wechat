@@ -9,6 +9,8 @@ import (
 	//"github.com/davecgh/go-spew/spew"
 	"github.com/garyburd/redigo/redis"
 	"github.com/levigross/grequests"
+	"github.com/yizenghui/wxarticle2md"
+	"html"
 	"log"
 	"net/url"
 	"regexp"
@@ -23,12 +25,15 @@ type ArticleResult struct {
 }
 
 type Article struct {
+	FileId    uint64    `json:"fileid"`
 	Title     string    `json:"title"`
+	Author    string    `json:"author"`
 	Url       string    `json:"content_url"`
 	Thumbnail string    `json:"cover"`
 	Date      int       `json:"datetime"`
 	SourceUrl string    `json:"source_url"`
 	Digest    string    `json:"digest"`
+	Markdown  string    `json:"-"`
 	Items     []Article `json:"multi_app_msg_item_list"`
 }
 
@@ -54,7 +59,6 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 	profile, err := this.getProfile(wechatName)
 
 	if err != nil {
-		log.Println(err)
 		return nil, err
 	}
 
@@ -63,7 +67,6 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 	}
 	resp, err := this.wxOpenUnlock(profile, "http://weixin.sogou.com/weixin?type=1&query="+wechatName+"&ie=utf8&_sug_=n&_sug_type_=")
 	if err != nil {
-		log.Println(err)
 		return nil, err
 	}
 
@@ -89,24 +92,49 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 		}
 		date := ret.Common.Date
 		if ret.Article.Title != "" {
-			a := Article{
-				Title:     ret.Article.Title,
-				Digest:    ret.Article.Digest,
-				Url:       fmt.Sprintf("https://mp.weixin.qq.com%s", ret.Article.Url),
-				Thumbnail: ret.Article.Thumbnail,
-				Date:      date,
+			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(ret.Article.Url))
+			mk, err := this.getArticle(link, profile)
+			if err == nil || mk != "" {
+				sourceUrl := profile
+				if ret.Article.SourceUrl != "" {
+					sourceUrl = ret.Article.SourceUrl
+				}
+				a := Article{
+					FileId:    ret.Article.FileId,
+					Author:    wechatName,
+					Title:     ret.Article.Title,
+					Digest:    ret.Article.Digest,
+					Url:       link,
+					SourceUrl: sourceUrl,
+					Thumbnail: ret.Article.Thumbnail,
+					Markdown:  mk,
+					Date:      date,
+				}
+				articles = append(articles, a)
 			}
-			articles = append(articles, a)
 		}
 		if ret.Article.Items == nil {
 			continue
 		}
 		for _, i := range ret.Article.Items {
+			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(i.Url))
+			mk, err := this.getArticle(link, profile)
+			if err != nil || mk == "" {
+				continue
+			}
+			sourceUrl := profile
+			if i.SourceUrl != "" {
+				sourceUrl = i.SourceUrl
+			}
 			a := Article{
+				FileId:    i.FileId,
+				Author:    wechatName,
 				Title:     i.Title,
 				Digest:    i.Digest,
-				Url:       fmt.Sprintf("https://mp.weixin.qq.com%s", i.Url),
+				Url:       link,
+				SourceUrl: sourceUrl,
 				Thumbnail: i.Thumbnail,
+				Markdown:  mk,
 				Date:      date,
 			}
 			articles = append(articles, a)
@@ -153,6 +181,32 @@ func (this *Spider) getProfile(name string) (string, error) {
 	return profile, nil
 }
 
+func (this *Spider) getArticle(link string, referrer string) (string, error) {
+	resp, err := this.wxOpenUnlock(link, referrer)
+	if err != nil {
+		return "", err
+	}
+	reader := bytes.NewReader(resp.Bytes())
+	doc, err := goquery.NewDocumentFromReader(reader)
+	if err != nil {
+		return "", err
+	}
+	dom := doc.Find(".rich_media_content")
+	if dom == nil {
+		return "", errors.New("not found dom")
+	}
+	content, err := dom.Html()
+	if err != nil {
+		return "", err
+	}
+	a, err := wxarticle2md.ToAticle(content)
+	if err != nil {
+		return "", err
+	}
+	mk := wxarticle2md.Convert(a)
+	return strings.TrimSpace(mk), err
+}
+
 func (this *Spider) wxOpenUnlock(link string, referrer string) (*grequests.Response, error) {
 	ro := &grequests.RequestOptions{
 		Headers: map[string]string{
@@ -165,7 +219,6 @@ func (this *Spider) wxOpenUnlock(link string, referrer string) (*grequests.Respo
 	}
 	resp, err := this.httpClient.Get(link, ro)
 	if err != nil {
-		log.Println(err)
 		return nil, err
 	}
 	body := resp.String()
@@ -188,10 +241,8 @@ func (this *Spider) tryUnlockWx(link string, referrer string) error {
 			Proxies: map[string]*url.URL{"https": proxyUrl},
 		}
 	}
-	log.Println(fmt.Sprintf("https://mp.weixin.qq.com/mp/verifycode?cert=%d", time.Now().UnixNano()))
 	resp, err := this.httpClient.Get(fmt.Sprintf("https://mp.weixin.qq.com/mp/verifycode?cert=%d", time.Now().UnixNano()), ro)
 	if err != nil {
-		log.Println(err)
 		return err
 	}
 	return this.unlockWxVerify(link, resp.Bytes())
@@ -201,7 +252,6 @@ func (this *Spider) unlockWxVerify(link string, image []byte) error {
 	log.Println("Try to unlock wechat")
 	file, err := this.slackBot.UploadFile(image)
 	if err != nil {
-		log.Println(err)
 		return err
 	}
 	defer this.slackBot.DeleteFile(file.ID)
@@ -214,7 +264,6 @@ func (this *Spider) unlockWxVerify(link string, image []byte) error {
 		case <-checkTicker.C:
 			finfo, _, err := this.slackBot.GetFile(file.ID)
 			if err != nil {
-				log.Println(err)
 				break
 			} else if finfo.Title != finfo.Name {
 				checkTicker.Stop()
@@ -234,7 +283,6 @@ func (this *Spider) unlockWxVerify(link string, image []byte) error {
 			}
 			resp, err := this.httpClient.Post("https://mp.weixin.qq.com/mp/verifycode", ro)
 			if err != nil {
-				log.Println(err)
 				return err
 			}
 			if resp.Ok {
