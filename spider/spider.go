@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/davecgh/go-spew/spew"
+	//"github.com/davecgh/go-spew/spew"
 	"github.com/garyburd/redigo/redis"
 	"github.com/levigross/grequests"
 	"log"
@@ -112,7 +112,6 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 			articles = append(articles, a)
 		}
 	}
-	spew.Dump(articles)
 	return articles, nil
 }
 
