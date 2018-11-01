@@ -38,20 +38,20 @@ type Article struct {
 }
 
 type Spider struct {
-	slackBot    *Slack
-	redisClient *redis.Pool
-	httpClient  *grequests.Session
+	slackBot   *Slack
+	proxy      *Proxy
+	httpClient *grequests.Session
 }
 
-func New(slackBot *Slack, redisClient *redis.Pool) *Spider {
+func New(slackBot *Slack, redisClient *redis.Pool, proxyApiKey string) *Spider {
 	ro := &grequests.RequestOptions{
 		UserAgent:    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1847.116 Safari/537.36",
 		UseCookieJar: true,
 	}
 	return &Spider{
-		slackBot:    slackBot,
-		redisClient: redisClient,
-		httpClient:  grequests.NewSession(ro),
+		slackBot:   slackBot,
+		proxy:      NewProxy(redisClient, proxyApiKey),
+		httpClient: grequests.NewSession(ro),
 	}
 }
 
@@ -145,7 +145,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 
 func (this *Spider) getProfile(name string) (string, error) {
 	var ro *grequests.RequestOptions
-	proxyUrl, _ := GetProxy(this.redisClient)
+	proxyUrl, _ := this.proxy.Get()
 	if proxyUrl != nil {
 		ro = &grequests.RequestOptions{
 			Proxies: map[string]*url.URL{"https": proxyUrl},
@@ -213,7 +213,7 @@ func (this *Spider) wxOpenUnlock(link string, referrer string) (*grequests.Respo
 			"Referer": referrer,
 		},
 	}
-	proxyUrl, _ := GetProxy(this.redisClient)
+	proxyUrl, _ := this.proxy.Get()
 	if proxyUrl != nil {
 		ro.Proxies = map[string]*url.URL{"https": proxyUrl}
 	}
@@ -235,7 +235,7 @@ func (this *Spider) wxOpenUnlock(link string, referrer string) (*grequests.Respo
 
 func (this *Spider) tryUnlockWx(link string, referrer string) error {
 	var ro *grequests.RequestOptions
-	proxyUrl, _ := GetProxy(this.redisClient)
+	proxyUrl, _ := this.proxy.Get()
 	if proxyUrl != nil {
 		ro = &grequests.RequestOptions{
 			Proxies: map[string]*url.URL{"https": proxyUrl},

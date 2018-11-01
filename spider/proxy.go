@@ -1,6 +1,7 @@
 package spider
 
 import (
+	"fmt"
 	"github.com/garyburd/redigo/redis"
 	"io/ioutil"
 	"net/http"
@@ -11,25 +12,37 @@ import (
 )
 
 const (
-	_PROXY_API_GATEWAY = "http://api.ip.data5u.com/dynamic/get.html?order=1f7742483dad4c4fa33aa0f7f40fd1d5&sep=3"
+	_PROXY_API_GATEWAY = "http://api.ip.data5u.com/dynamic/get.html?order=%s&sep=3"
 	_PROXY_CACHE_KEY   = "data:5u:proxy"
 )
 
-func GetProxy(service *redis.Pool) (proxyURL *url.URL, err error) {
+type Proxy struct {
+	cache  *redis.Pool
+	apiKey string
+}
+
+func NewProxy(service *redis.Pool, apiKey string) *Proxy {
+	return &Proxy{
+		cache:  service,
+		apiKey: apiKey,
+	}
+}
+
+func (this *Proxy) Get() (proxyURL *url.URL, err error) {
 	var proxy string
-	if service != nil {
-		redisConn := service.Get()
+	if this.cache != nil {
+		redisConn := this.cache.Get()
 		defer redisConn.Close()
 		proxy, err = redis.String(redisConn.Do("GET", _PROXY_CACHE_KEY))
 		if err != nil {
-			proxy, err = UpdateProxy()
+			proxy, err = this.Update()
 			if proxy == "" || err != nil {
 				return nil, err
 			}
 			redisConn.Do("SETEX", _PROXY_CACHE_KEY, 50, proxy)
 		}
 	} else {
-		proxy, err = UpdateProxy()
+		proxy, err = this.Update()
 		if err != nil || proxy == "" {
 			return nil, err
 		}
@@ -38,8 +51,8 @@ func GetProxy(service *redis.Pool) (proxyURL *url.URL, err error) {
 	return url.Parse("http://" + proxy)
 }
 
-func UpdateProxy() (proxy string, err error) {
-	resp, err := http.Get(_PROXY_API_GATEWAY)
+func (this *Proxy) Update() (proxy string, err error) {
+	resp, err := http.Get(fmt.Sprintf(_PROXY_API_GATEWAY, this.apiKey))
 	if err != nil {
 		return "", err
 	}
