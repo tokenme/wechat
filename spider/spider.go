@@ -1,416 +1,213 @@
-package spider
+package wechatspider
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
+	"context"
+	"encoding/base64"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	//"github.com/davecgh/go-spew/spew"
-	"github.com/garyburd/redigo/redis"
-	"github.com/levigross/grequests"
-	"github.com/yizenghui/wxarticle2md"
-	"html"
-	"log"
+	"github.com/mkideal/log"
+	"github.com/panjf2000/ants"
+	"github.com/tokenme/tmm/common"
+	"github.com/tokenme/tmm/tools/qiniu"
+	"github.com/tokenme/tmm/utils"
+	"github.com/tokenme/wechat/spider"
+	"gopkg.in/russross/blackfriday.v2"
+	"io/ioutil"
 	"net/http"
-	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-type ArticleResult struct {
-	Article *Article `json:"app_msg_ext_info"`
-	Common  *Article `json:"comm_msg_info"`
+type Crawler struct {
+	spider  *spider.Spider
+	service *common.Service
+	config  common.Config
 }
 
-type Article struct {
-	FileId    uint64    `json:"fileid"`
-	Title     string    `json:"title"`
-	Author    string    `json:"author"`
-	Url       string    `json:"content_url"`
-	Thumbnail string    `json:"cover"`
-	Date      int       `json:"datetime"`
-	SourceUrl string    `json:"source_url"`
-	Digest    string    `json:"digest"`
-	Markdown  string    `json:"-"`
-	Items     []Article `json:"multi_app_msg_item_list"`
-}
-
-type Spider struct {
-	slackBot   *Slack
-	proxy      *Proxy
-	httpClient *grequests.Session
-	cookies    []*http.Cookie
-}
-
-func New(slackBot *Slack, redisClient *redis.Pool, proxyApiKey string) *Spider {
-	ro := &grequests.RequestOptions{
-		UserAgent:    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1847.116 Safari/537.36",
-		UseCookieJar: true,
-	}
-	return &Spider{
-		slackBot:   slackBot,
-		proxy:      NewProxy(redisClient, proxyApiKey),
-		httpClient: grequests.NewSession(ro),
+func NewCrawler(service *common.Service, config common.Config) *Crawler {
+	slack := spider.NewSlack(config.Slack.Token, config.Slack.CaptchaChannel)
+	spiderClient := spider.New(slack, service.Redis.Master, config.ProxyApiKey)
+	return &Crawler{
+		spider:  spiderClient,
+		service: service,
+		config:  config,
 	}
 }
 
-func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
-	profile, err := this.getProfile(wechatName)
-
+func (this *Crawler) Run() error {
+	log.Info("Article Crawler start")
+	names, err := this.getGzh()
 	if err != nil {
-		return nil, err
-	}
-
-	if profile == "" {
-		return nil, fmt.Errorf("%s", "公众号不存在或代理失效!")
-	}
-	resp, err := this.wxOpenUnlock(profile, "http://weixin.sogou.com/weixin?type=1&query="+wechatName+"&ie=utf8&_sug_=n&_sug_type_=")
-	if err != nil {
-		return nil, err
-	}
-
-	r, _ := regexp.Compile("var msgList = {\"list\":\\[([\\s\\S]*?)\\]}")
-	result := r.FindAllSubmatch(resp.Bytes(), -1)
-	if len(result) == 0 {
-		return nil, errors.New("not found")
-	}
-	var buffer bytes.Buffer
-	buffer.Write([]byte("["))
-	buffer.Write(result[0][1])
-	buffer.Write([]byte("]"))
-	msgList := buffer.Bytes()
-	var articlesResult []ArticleResult
-	err = json.Unmarshal(msgList, &articlesResult)
-	if err != nil {
-		return nil, err
-	}
-	var articles []Article
-	for _, ret := range articlesResult {
-		if ret.Common == nil || ret.Article == nil {
-			continue
-		}
-		date := ret.Common.Date
-		if ret.Article.Title != "" {
-			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(ret.Article.Url))
-			mk, err := this.getArticle(link, profile)
-			if err == nil || mk != "" {
-				sourceUrl := profile
-				if ret.Article.SourceUrl != "" {
-					sourceUrl = ret.Article.SourceUrl
-				}
-				a := Article{
-					FileId:    ret.Article.FileId,
-					Author:    wechatName,
-					Title:     ret.Article.Title,
-					Digest:    ret.Article.Digest,
-					Url:       link,
-					SourceUrl: sourceUrl,
-					Thumbnail: ret.Article.Thumbnail,
-					Markdown:  mk,
-					Date:      date,
-				}
-				articles = append(articles, a)
-			}
-		}
-		if ret.Article.Items == nil {
-			continue
-		}
-		for _, i := range ret.Article.Items {
-			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(i.Url))
-			mk, err := this.getArticle(link, profile)
-			if err != nil || mk == "" {
-				continue
-			}
-			sourceUrl := profile
-			if i.SourceUrl != "" {
-				sourceUrl = i.SourceUrl
-			}
-			a := Article{
-				FileId:    i.FileId,
-				Author:    wechatName,
-				Title:     i.Title,
-				Digest:    i.Digest,
-				Url:       link,
-				SourceUrl: sourceUrl,
-				Thumbnail: i.Thumbnail,
-				Markdown:  mk,
-				Date:      date,
-			}
-			articles = append(articles, a)
-		}
-	}
-	return articles, nil
-}
-
-func (this *Spider) getProfile(name string) (string, error) {
-	resp, err := this.sogouOpenUnlock("http://weixin.sogou.com/weixin?type=1&query="+name+"&ie=utf8&_sug_=n&_sug_type_=", "http://weixin.sogou.com")
-	if err != nil {
-		return "", err
-	}
-	reader := bytes.NewReader(resp.Bytes())
-	doc, err := goquery.NewDocumentFromReader(reader)
-	if err != nil {
-		return "", err
-	}
-	profile := ""
-
-	doc.Find(".news-box li p.tit a").EachWithBreak(func(i int, s *goquery.Selection) bool {
-		// For each item found, get the band and title
-		weixinhao := s.Find("em").Text()
-		if weixinhao == name {
-			profile, _ = s.Attr("href")
-			return false
-		}
-		return true
-	})
-
-	//如果没有则默认取第一个
-
-	if profile == "" {
-		profile, _ = doc.Find("li p.tit a").Eq(0).Attr("href")
-	}
-
-	return profile, nil
-}
-
-func (this *Spider) getArticle(link string, referrer string) (string, error) {
-	resp, err := this.wxOpenUnlock(link, referrer)
-	if err != nil {
-		return "", err
-	}
-	reader := bytes.NewReader(resp.Bytes())
-	doc, err := goquery.NewDocumentFromReader(reader)
-	if err != nil {
-		return "", err
-	}
-	dom := doc.Find(".rich_media_content")
-	if dom == nil {
-		return "", errors.New("not found dom")
-	}
-	content, err := dom.Html()
-	if err != nil {
-		return "", err
-	}
-	a, err := wxarticle2md.ToAticle(content)
-	if err != nil {
-		return "", err
-	}
-	mk := wxarticle2md.Convert(a)
-	return strings.TrimSpace(mk), err
-}
-
-func (this *Spider) sogouOpenUnlock(link, referrer string) (*grequests.Response, error) {
-	ro := &grequests.RequestOptions{
-		Headers: map[string]string{
-			"Referer": referrer,
-		},
-	}
-	if this.cookies != nil {
-		ro.Cookies = this.cookies
-	}
-	proxyUrl, _ := this.proxy.Get()
-	if proxyUrl != nil {
-		ro.Proxies = map[string]*url.URL{"https": proxyUrl}
-	}
-	resp, err := this.httpClient.Get(link, ro)
-	if err != nil {
-		return nil, err
-	}
-	body := resp.String()
-	respUrl := resp.RawResponse.Request.URL.String()
-	if strings.Contains(respUrl, "antispider") || strings.Contains(body, "请输入验证码") {
-		sessionCookies := resp.RawResponse.Cookies()
-		snuid, err := this.tryUnlockSogou(respUrl)
-		if err != nil {
-			return nil, err
-		} else {
-			var cookies []*http.Cookie
-			for _, c := range sessionCookies {
-				if c.Name == "SUID" {
-					cookies = append(cookies, &http.Cookie{
-						Name:   "SUV",
-						Value:  c.Value,
-						Domain: "sogou.com",
-					})
-				}
-			}
-			cookies = append(cookies, &http.Cookie{
-				Name:   "SNUID",
-				Value:  snuid,
-				Domain: "sogou.com",
-			})
-			this.cookies = cookies
-			return this.sogouOpenUnlock(link, referrer)
-		}
-	}
-	return resp, nil
-}
-
-func (this *Spider) tryUnlockSogou(referrer string) (string, error) {
-	var ro *grequests.RequestOptions
-	proxyUrl, _ := this.proxy.Get()
-	if proxyUrl != nil {
-		ro = &grequests.RequestOptions{
-			Proxies: map[string]*url.URL{"https": proxyUrl},
-		}
-	}
-	resp, err := this.httpClient.Get(fmt.Sprintf("http://weixin.sogou.com/antispider/util/seccode.php?tc=%d", time.Now().UnixNano()), ro)
-	if err != nil {
-		return "", err
-	}
-	return this.unlockSogouVerify(referrer, resp.Bytes())
-}
-
-func (this *Spider) unlockSogouVerify(referrer string, image []byte) (snuid string, err error) {
-	log.Println("Try to unlock Sogou")
-	file, err := this.slackBot.UploadFile(image)
-	if err != nil {
-		return "", err
-	}
-	defer this.slackBot.DeleteFile(file.ID)
-	log.Println("Uploaded file: ", file.ID)
-	checkTicker := time.NewTicker(2 * time.Second)
-	codeCh := make(chan string, 1)
-	defer close(codeCh)
-	for {
-		select {
-		case <-checkTicker.C:
-			finfo, _, err := this.slackBot.GetFile(file.ID)
-			if err != nil {
-				break
-			} else if finfo.Title != finfo.Name {
-				checkTicker.Stop()
-				codeCh <- finfo.Title
-			}
-		case code := <-codeCh:
-			log.Println("get code: ", code)
-			u, _ := url.Parse(referrer)
-			query := u.Query()
-			ro := &grequests.RequestOptions{
-				Data: map[string]string{
-					"c": code,
-					"v": "5",
-					"r": url.QueryEscape(query.Get("from")),
-				},
-				Headers: map[string]string{
-					"Referer": referrer,
-				},
-			}
-			resp, err := this.httpClient.Post("http://weixin.sogou.com/antispider/thank.php", ro)
-			if err != nil {
-				return "", err
-			}
-			log.Println(resp.String())
-			if resp.Ok {
-				var ret SogouUnlockResponse
-				err := json.Unmarshal(resp.Bytes(), &ret)
-				if ret.Code == 0 && ret.Id != "" {
-					return ret.Id, nil
-				} else if err != nil {
-					return "", err
-				}
-				return "", errors.New(ret.Msg)
-			} else {
-				return "", errors.New("verfiy code failed")
-			}
-		}
-	}
-	return "", nil
-}
-
-func (this *Spider) wxOpenUnlock(link string, referrer string) (*grequests.Response, error) {
-	ro := &grequests.RequestOptions{
-		Headers: map[string]string{
-			"Referer": referrer,
-		},
-	}
-	proxyUrl, _ := this.proxy.Get()
-	if proxyUrl != nil {
-		ro.Proxies = map[string]*url.URL{"https": proxyUrl}
-	}
-	resp, err := this.httpClient.Get(link, ro)
-	if err != nil {
-		return nil, err
-	}
-	body := resp.String()
-	if strings.Contains(body, "请输入验证码") {
-		err := this.tryUnlockWx(link, referrer)
-		if err != nil {
-			return nil, err
-		} else {
-			return this.wxOpenUnlock(link, referrer)
-		}
-	}
-	return resp, nil
-}
-
-func (this *Spider) tryUnlockWx(link string, referrer string) error {
-	var ro *grequests.RequestOptions
-	proxyUrl, _ := this.proxy.Get()
-	if proxyUrl != nil {
-		ro = &grequests.RequestOptions{
-			Proxies: map[string]*url.URL{"https": proxyUrl},
-		}
-	}
-	resp, err := this.httpClient.Get(fmt.Sprintf("https://mp.weixin.qq.com/mp/verifycode?cert=%d", time.Now().UnixNano()), ro)
-	if err != nil {
+		log.Error(err.Error())
 		return err
 	}
-	return this.unlockWxVerify(link, resp.Bytes())
-}
-
-func (this *Spider) unlockWxVerify(link string, image []byte) error {
-	log.Println("Try to unlock wechat")
-	file, err := this.slackBot.UploadFile(image)
-	if err != nil {
-		return err
-	}
-	defer this.slackBot.DeleteFile(file.ID)
-	log.Println("Uploaded file: ", file.ID)
-	checkTicker := time.NewTicker(2 * time.Second)
-	codeCh := make(chan string, 1)
-	defer close(codeCh)
-	for {
-		select {
-		case <-checkTicker.C:
-			finfo, _, err := this.slackBot.GetFile(file.ID)
-			if err != nil {
-				break
-			} else if finfo.Title != finfo.Name {
-				checkTicker.Stop()
-				codeCh <- finfo.Title
-			}
-		case code := <-codeCh:
-			log.Println("get code: ", code)
-			ro := &grequests.RequestOptions{
-				Data: map[string]string{
-					"cert":  strconv.FormatInt(time.Now().UnixNano(), 10),
-					"input": code,
-				},
-				Headers: map[string]string{
-					"Host":    "mp.weixin.qq.com",
-					"Referer": link,
-				},
-			}
-			resp, err := this.httpClient.Post("https://mp.weixin.qq.com/mp/verifycode", ro)
-			if err != nil {
-				return err
-			}
-			if resp.Ok {
-				return nil
-			} else {
-				return errors.New("verfiy code failed")
-			}
+	log.Info("%d Wechat accounts", len(names))
+	for _, name := range names {
+		count, err := this.GetGzhArticles(name)
+		if err != nil {
+			log.Error(err.Error())
+			continue
 		}
+		log.Warn("Finished %d articles in %s", count, name)
 	}
 	return nil
 }
 
-type SogouUnlockResponse struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Id   string `json:"id"`
+func (this *Crawler) getGzh() ([]string, error) {
+	db := this.service.Db
+	rows, _, err := db.Query(`SELECT name FROM tmm.wx_gzh WHERE updated_at IS NULL OR updated_at<DATE_SUB(NOW(), INTERVAL 1 DAY)`)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, row := range rows {
+		names = append(names, row.Str(0))
+	}
+	return names, nil
+}
+
+func (this *Crawler) GetGzhArticles(name string) (int, error) {
+	articles, err := this.spider.GetGzhArticles(name)
+	if err != nil {
+		return 0, err
+	}
+	log.Warn("Got %d articles in %s", len(articles), name)
+	if len(articles) == 0 {
+		return 0, nil
+	}
+	var val []string
+	db := this.service.Db
+	var ids []string
+	for _, a := range articles {
+		ids = append(ids, fmt.Sprintf("%d", a.FileId))
+	}
+	rows, _, err := db.Query(`SELECT fileid FROM tmm.articles WHERE fileid IN (%s)`, strings.Join(ids, ","))
+	if err != nil {
+		return 0, err
+	}
+	idMap := make(map[uint64]struct{})
+	for _, row := range rows {
+		idMap[row.Uint64(0)] = struct{}{}
+	}
+	for _, a := range articles {
+		if _, found := idMap[a.FileId]; found || a.FileId == 0 {
+			continue
+		}
+		newA, err := this.updateArticleImages(a)
+		if err != nil {
+			log.Error(err.Error())
+			continue
+		}
+		publishTime := time.Unix(1539857334, 0)
+		sortId := utils.RangeRandUint64(1, 1000000)
+		val = append(val, fmt.Sprintf("(%d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', %d)", newA.FileId, db.Escape(newA.Author), db.Escape(newA.Title), db.Escape(newA.Url), db.Escape(newA.SourceUrl), db.Escape(newA.Thumbnail), publishTime.Format("2006-01-02 15:04:05"), db.Escape(newA.Digest), db.Escape(newA.Markdown), sortId))
+	}
+	count := len(val)
+	if count > 0 {
+		_, _, err := db.Query(`INSERT IGNORE INTO tmm.articles (fileid, author, title, link, source_url, cover, published_at, digest, content, sortid) VALUES %s`, strings.Join(val, ","))
+		if err != nil {
+			return 0, err
+		}
+		_, _, err = db.Query(`UPDATE tmm.wx_gzh SET updated_at=NOW() WHERE name='%s'`, db.Escape(name))
+		if err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
+func (this *Crawler) updateArticleImages(a spider.Article) (spider.Article, error) {
+	reader := bytes.NewBuffer(blackfriday.Run([]byte(a.Markdown)))
+	doc, err := goquery.NewDocumentFromReader(reader)
+	if err != nil {
+		return a, err
+	}
+	var imageMap sync.Map
+	var wg sync.WaitGroup
+	uploadImagePool, _ := ants.NewPoolWithFunc(10, func(src interface{}) error {
+		defer wg.Done()
+		ori := src.(string)
+		link, err := this.uploadImage(ori)
+		if err != nil {
+			log.Error(err.Error())
+			return err
+		}
+		imageMap.Store(ori, link)
+		return nil
+	})
+	doc.Find("img").Each(func(idx int, s *goquery.Selection) {
+		s.SetAttr("class", "image")
+		if src, found := s.Attr("src"); found {
+			wg.Add(1)
+			uploadImagePool.Serve(src)
+		} else {
+			s.Remove()
+		}
+	})
+	wg.Wait()
+	doc.Find("img").Each(func(idx int, s *goquery.Selection) {
+		s.SetAttr("class", "image")
+		if src, found := s.Attr("src"); found {
+			if link, found := imageMap.Load(src); found {
+				s.SetAttr("src", link.(string))
+			} else {
+				s.Remove()
+			}
+		} else {
+			s.Remove()
+		}
+	})
+	h, err := doc.Find("body").Html()
+	if err != nil {
+		return a, err
+	}
+	a.Markdown = h
+	return a, nil
+}
+
+func (this *Crawler) uploadImage(src string) (string, error) {
+	log.Info("Uploading image: %s", src)
+	resp, err := http.DefaultClient.Get(src)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	fn := base64.URLEncoding.EncodeToString([]byte(src))
+	link, _, err := qiniu.Upload(context.Background(), this.config.Qiniu, this.config.Qiniu.ImagePath, fn, body)
+	return link, err
+}
+
+func (this *Crawler) Publish() error {
+	db := this.service.Db
+	rows, _, err := db.Query(`SELECT id, title, digest, cover FROM tmm.articles WHERE published=0 ORDER BY sortid LIMIT 1000`)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	var val []string
+	for _, row := range rows {
+		id := row.Uint64(0)
+		title := row.Str(1)
+		digest := row.Str(2)
+		link := fmt.Sprintf("https://tmm.tokenmama.io/article/show/%d", id)
+		cover := strings.Replace(row.Str(3), "http://", "https://", -1)
+		ids = append(ids, fmt.Sprintf("%d", id))
+		val = append(val, fmt.Sprintf("(0, '%s', '%s', '%s', '%s', 100, 100, 1, 10)", db.Escape(title), db.Escape(digest), db.Escape(link), db.Escape(cover)))
+	}
+	if len(val) > 0 {
+		_, _, err := db.Query(`INSERT INTO tmm.share_tasks (creator, title, summary, link, image, points, points_left, bonus, max_viewers) VALUES %s`, strings.Join(val, ","))
+		if err != nil {
+			return err
+		}
+		_, _, err = db.Query(`UPDATE tmm.articles SET published=1 WHERE id IN (%s)`, strings.Join(ids, ","))
+		if err != nil {
+			return err
+		}
+		log.Info("Published %d articles", len(ids))
+	}
+	return nil
 }
