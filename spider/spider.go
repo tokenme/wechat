@@ -96,6 +96,11 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 		}
 		date := ret.Common.Date
 		var articleId uint64
+		if ret.Article.FileId == 0 {
+			articleId = ret.Common.Id
+		} else {
+			articleId = ret.Article.FileId
+		}
 		if ret.Article.Title != "" {
 			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(ret.Article.Url))
 			mk, err := this.getArticle(link, profile)
@@ -104,13 +109,8 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 				if ret.Article.SourceUrl != "" {
 					sourceUrl = ret.Article.SourceUrl
 				}
-				if ret.Article.FileId == 0 {
-					articleId = ret.Common.Id
-				} else {
-					articleId = ret.Article.FileId
-				}
 				a := Article{
-					FileId:    ret.Article.FileId,
+					FileId:    articleId,
 					Author:    wechatName,
 					Title:     ret.Article.Title,
 					Digest:    ret.Article.Digest,
