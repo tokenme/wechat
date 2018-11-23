@@ -28,6 +28,7 @@ type ArticleResult struct {
 type Article struct {
 	Id        uint64    `json:"id"`
 	FileId    uint64    `json:"fileid"`
+	FakeId    string    `json:"fakeid"`
 	Title     string    `json:"title"`
 	Author    string    `json:"author"`
 	Url       string    `json:"content_url"`
@@ -67,7 +68,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 	}
 
 	if profile == "" {
-		return nil, fmt.Errorf("%s", "公众号不存在或代理失效!")
+		return nil, fmt.Errorf("%s", "公众号 "+wechatName+" 不存在或代理失效!")
 	}
 	resp, err := this.wxOpenUnlock(profile, "http://weixin.sogou.com/weixin?type=1&query="+wechatName+"&ie=utf8&_sug_=n&_sug_type_=")
 	if err != nil {
@@ -95,11 +96,10 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 			continue
 		}
 		date := ret.Common.Date
-		var articleId uint64
+		fakeId, _ := strconv.ParseUint(ret.Common.FakeId, 10, 64)
+		articleId := ret.Article.FileId
 		if ret.Article.FileId == 0 {
-			articleId = ret.Common.Id
-		} else {
-			articleId = ret.Article.FileId
+			articleId = fakeId + ret.Common.Id
 		}
 		if ret.Article.Title != "" {
 			link := fmt.Sprintf("https://mp.weixin.qq.com%s", html.UnescapeString(ret.Article.Url))
@@ -112,8 +112,8 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 				a := Article{
 					FileId:    articleId,
 					Author:    wechatName,
-					Title:     ret.Article.Title,
-					Digest:    ret.Article.Digest,
+					Title:     html.UnescapeString(ret.Article.Title),
+					Digest:    html.UnescapeString(ret.Article.Digest),
 					Url:       link,
 					SourceUrl: sourceUrl,
 					Thumbnail: ret.Article.Thumbnail,
@@ -145,8 +145,8 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 			a := Article{
 				FileId:    msgId,
 				Author:    wechatName,
-				Title:     i.Title,
-				Digest:    i.Digest,
+				Title:     html.UnescapeString(i.Title),
+				Digest:    html.UnescapeString(i.Digest),
 				Url:       link,
 				SourceUrl: sourceUrl,
 				Thumbnail: i.Thumbnail,
