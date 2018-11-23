@@ -32,7 +32,7 @@ type Article struct {
 	Author    string    `json:"author"`
 	Url       string    `json:"content_url"`
 	Thumbnail string    `json:"cover"`
-	Date      int       `json:"datetime"`
+	Date      int64     `json:"datetime"`
 	SourceUrl string    `json:"source_url"`
 	Digest    string    `json:"digest"`
 	Markdown  string    `json:"-"`
