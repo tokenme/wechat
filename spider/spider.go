@@ -257,6 +257,7 @@ func (this *Spider) sogouOpenUnlock(link, referrer string) (*grequests.Response,
 				Domain: "sogou.com",
 			})
 			this.cookies = cookies
+			this.proxy.Update()
 			return this.sogouOpenUnlock(link, referrer)
 		}
 	}
