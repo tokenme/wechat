@@ -33,11 +33,10 @@ type Article struct {
 	Author    string    `json:"author"`
 	Url       string    `json:"content_url"`
 	Thumbnail string    `json:"cover"`
-	Date      int64     `json:"datetime"`
 	SourceUrl string    `json:"source_url"`
 	Digest    string    `json:"digest"`
 	Markdown  string    `json:"-"`
-	Datetime  uint64    `json:"datetime"`
+	DateTime  int64     `json:"datetime"`
 	Items     []Article `json:"multi_app_msg_item_list"`
 }
 
@@ -95,7 +94,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 		if ret.Common == nil || ret.Article == nil {
 			continue
 		}
-		date := ret.Common.Date
+		date := ret.Common.DateTime
 		fakeId, _ := strconv.ParseUint(ret.Common.FakeId, 10, 64)
 		articleId := ret.Article.FileId
 		if ret.Article.FileId == 0 {
@@ -118,7 +117,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 					SourceUrl: sourceUrl,
 					Thumbnail: ret.Article.Thumbnail,
 					Markdown:  mk,
-					Date:      date,
+					DateTime:  date,
 				}
 				articles = append(articles, a)
 			}
@@ -138,7 +137,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 			}
 			var msgId uint64
 			if i.FileId == 0 {
-				msgId = articleId + ret.Article.Datetime + uint64(idx)
+				msgId = articleId + uint64(date) + uint64(idx)
 			} else {
 				msgId = i.FileId
 			}
@@ -151,7 +150,7 @@ func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 				SourceUrl: sourceUrl,
 				Thumbnail: i.Thumbnail,
 				Markdown:  mk,
-				Date:      date,
+				DateTime:  date,
 			}
 			articles = append(articles, a)
 		}
