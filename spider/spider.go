@@ -59,6 +59,14 @@ func New(slackBot *Slack, redisClient *redis.Pool, proxyApiKey string) *Spider {
 	}
 }
 
+func (this *Spider) ReloadHttpClient() {
+	ro := &grequests.RequestOptions{
+		UserAgent:    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1847.116 Safari/537.36",
+		UseCookieJar: true,
+	}
+	this.httpClient = grequests.NewSession(ro)
+}
+
 func (this *Spider) GetGzhArticles(wechatName string) ([]Article, error) {
 	profile, err := this.getProfile(wechatName)
 
@@ -257,6 +265,7 @@ func (this *Spider) sogouOpenUnlock(link, referrer string) (*grequests.Response,
 			})
 			this.cookies = cookies
 			this.proxy.Update()
+			this.ReloadHttpClient()
 			return this.sogouOpenUnlock(link, referrer)
 		}
 	}
